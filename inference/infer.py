@@ -28,6 +28,8 @@ from model_resUnet import UNet
 c_write_nrrd = False # Write output volumes in nrrd format
 c_write_mip = True # write output as mean intensity projections in png format
 
+c_target_spacing = np.array((2.23214293, 2.23214293, 4.5)) # Target spacing to which all voxels are resampled when fusing stations
+
 def main(argv):
 
     path_ids = "ids.txt" # List of subject ids to be processed
@@ -36,8 +38,14 @@ def main(argv):
     path_checkpoint = "/media/taro/DATA/Taro/Projects/ukb_segmentation/cross-validation/networks/kidney_122_traintest_watRoi192_deform_80kLR/subset_0/snapshots/iteration_080000.pth.tar"
     path_out = "/media/taro/DATA/Taro/Projects/ukb_segmentation/github/temp_out/"
 
+    # Select which MRI stations to perform inference on
+    station_ids = [0, 1, 2]
+
     #
     time_start = time.time()
+
+    #if os.path.exists(path_out):
+        #shutil.rmtree(path_out)
 
     ###    
     if not os.path.exists(path_out):
@@ -73,7 +81,7 @@ def main(argv):
     net.eval()
 
     # Use pytorch data loader for parallel loading and prediction
-    loader = getDataloader(path_dicom, subject_ids)
+    loader = getDataloader(path_dicom, subject_ids, station_ids)
 
     #
     i = 0
@@ -109,11 +117,10 @@ def processSubject(station_vols, headers, net, subject_id, path_out):
         headers[i]["space dimension"] = headers[i]["space dimension"].data.numpy()[0]
 
     # Predict and fuse stations
-    (img, out, header, img_fusion_cost, seg_fusion_cost) = predictForSubject.predictForSubject(station_vols, headers, net)
+    (img, out, header, img_fusion_cost, seg_fusion_cost) = predictForSubject.predictForSubject(station_vols, headers, net, c_target_spacing, True)
 
     # 
-    space_dir = header["space directions"]
-    voxel_dim = np.array((space_dir[0][0], space_dir[1][1], space_dir[2][2]))
+    voxel_dim = c_target_spacing
 
     # Get measurements and quality ratings from output
     (volume_left, volume_right, volume_total, offsets, kidney_z_cost, label_mask) = measure.measureKidneys(out, voxel_dim)
@@ -202,9 +209,9 @@ def normalize(values):
     return values
 
 
-def getDataloader(path_dicom, subject_ids):
+def getDataloader(path_dicom, subject_ids, station_ids):
 
-    dataset = DicomDataset(path_dicom, subject_ids)
+    dataset = DicomDataset(path_dicom, subject_ids, station_ids)
 
     loader = torch.utils.data.DataLoader(dataset,
                                         num_workers=8,
@@ -216,10 +223,11 @@ def getDataloader(path_dicom, subject_ids):
 
 class DicomDataset(data.Dataset):
 
-    def __init__(self, path_dicom, subject_ids):
+    def __init__(self, path_dicom, subject_ids, station_ids):
 
         self.path_dicom = path_dicom
         self.subject_ids = subject_ids
+        self.station_ids = station_ids
 
     def __len__(self):
         return len(self.subject_ids)
@@ -229,7 +237,7 @@ class DicomDataset(data.Dataset):
         # Load intensity image
         subject_id = self.subject_ids[index]
 
-        (station_vols, headers) = dicomToVolume.dicomToVolume(self.path_dicom + "{}_20201_2_0.zip".format(subject_id))
+        (station_vols, headers) = dicomToVolume.dicomToVolume(self.path_dicom + "{}_20201_2_0.zip".format(subject_id), self.station_ids)
 
         for i in range(len(station_vols)):
             station_vols[i] = np.ascontiguousarray(station_vols[i])

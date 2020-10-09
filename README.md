@@ -1,4 +1,4 @@
-# Neural networks for kidney segmentation in UK Biobank neck-to-knee body MRI
+# Neural networks for semantic segmentation of UK Biobank neck-to-knee body MRI
 
 This repository contains PyTorch code for cross-validation and inference with neural networks for kidney segmentation on UK Biobank neck-to-knee body MRI, as described in:
 [_"Kidney segmentation in neck-to-knee body MRI of 40,000 UK Biobank participants"_](https://arxiv.org/abs/2006.06996) [1]
@@ -8,7 +8,7 @@ The included inference pipeline and trained snapshot enables measurements of lef
 Contents:
 - 2.5D U-Net architecture with residual connections
 - Infrastructure for training and *cross-validation*
-- Pipeline for *inference* on MRI DICOMs
+- Pipeline for *inference* on neck-to-knee body MRI DICOMs
 - Code for *quality_controls* based on numerical metrics
 - Trained snapshot for parenchymal kidney tissue can be found at *TODO*
 

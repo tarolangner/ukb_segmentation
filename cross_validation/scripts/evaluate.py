@@ -217,7 +217,7 @@ def plotCurve(path_out, x, y, label_x, label_y):
     plt.close()
 
 
-def evaluateSnapshots(path_checkpoints, path_stations_img, path_stations_gt, path_split, val_subset, path_out, net):
+def evaluateSnapshots(path_checkpoints, path_stations_img, path_stations_gt, path_split, val_subset, path_out, net, station_ids, target_spacing):
 
     time_start = time.time()
 
@@ -236,8 +236,7 @@ def evaluateSnapshots(path_checkpoints, path_stations_img, path_stations_gt, pat
 
     # Fuse and store reference segmentation
     for i in range(N):
-
-        fuseStationsGt(val_subjects[i], path_stations_gt, path_out + "volumes/")
+        fuseStationsGt(val_subjects[i], path_stations_img, path_stations_gt, path_out + "volumes/", station_ids, target_spacing)
 
     # Find checkpoints
     checkpoint_files = [f for f in os.listdir(path_checkpoints) if os.path.isfile(os.path.join(path_checkpoints, f))]
@@ -250,7 +249,7 @@ def evaluateSnapshots(path_checkpoints, path_stations_img, path_stations_gt, pat
         print("   Evaluating snapshot {}...".format(i))
         checkpoint_i = path_checkpoints + checkpoint_files[i]
 
-        predictWithCheckpoint(checkpoint_i, path_stations_img, val_subjects, net, path_out + "volumes/")
+        predictWithCheckpoint(checkpoint_i, path_stations_img, val_subjects, net, path_out + "volumes/", station_ids, target_spacing)
 
         iteration = checkpoint_files[i].split("_")[1].split(".")[0]
         evaluateAgreement(path_out, iteration, val_subjects)
@@ -281,6 +280,7 @@ def evaluateAgreement(path_out, iteration, val_subjects):
             voxel_dim = np.array((space_dir[0][0], space_dir[1][1], space_dir[2][2]))
             voxel_scale = np.prod(voxel_dim) / (10*10*10)
 
+
             # Get positives, true positives, false positives
             p = np.count_nonzero(gt)
             tp = np.count_nonzero(np.multiply(gt, out))
@@ -295,7 +295,7 @@ def evaluateAgreement(path_out, iteration, val_subjects):
             f.write("{},{},{},{},{},{}\n".format(val_subjects[i],dice,p,tp,fp,voxel_scale))
 
 
-def predictWithCheckpoint(path_checkpoint, path_stations_img, val_subjects, net, path_out):
+def predictWithCheckpoint(path_checkpoint, path_stations_img, val_subjects, net, path_out, station_ids, target_spacing):
 
     # Load network weights
     checkpoint = torch.load(path_checkpoint, map_location={"cuda" : "cpu"})
@@ -309,32 +309,71 @@ def predictWithCheckpoint(path_checkpoint, path_stations_img, val_subjects, net,
 
         print("Subject {}".format(val_subjects[i]))
 
-        (img_1, header_1) = nrrd.read(path_stations_img + "{}_station1_W.nrrd".format(val_subjects[i]))
-        (img_2, header_2) = nrrd.read(path_stations_img + "{}_station2_W.nrrd".format(val_subjects[i]))
+        stations = []
+        headers = []
 
-        (img, out, header, _, _) = predictForSubject.predictForSubject([img_1, img_2], [header_1, header_2], net)
+        for s in station_ids:
+
+            (station, header) = nrrd.read(path_stations_img + "{}_station{}_W.nrrd".format(val_subjects[i], s))
+            stations.append(station)
+            headers.append(header)
+            #(img_2, header_2) = nrrd.read(path_stations_img + "{}_station2_W.nrrd".format(val_subjects[i]))
 
         if not os.path.exists(path_out + "{}_img.nrrd".format(val_subjects[i])):
+            fuse_img = True
+        else:
+            fuse_img = False
+
+        (img, out, header, _, _) = predictForSubject.predictForSubject(stations, headers, net, target_spacing, fuse_img)
+
+        if fuse_img:
             nrrd.write(path_out + "{}_img.nrrd".format(val_subjects[i]), img, header, compression_level=1)
 
         nrrd.write(path_out + "{}_out.nrrd".format(val_subjects[i]), out, header, compression_level=1)
 
 
-def fuseStationsGt(subject_id, path_stations_gt, path_out):
+def fuseStationsGt(subject_id, path_stations_img, path_stations_gt, path_out, station_ids, target_spacing):
 
-    (gt_1, header_1) = nrrd.read(path_stations_gt + "{}_station1.nrrd".format(subject_id))
-    (gt_2, header_2) = nrrd.read(path_stations_gt + "{}_station2.nrrd".format(subject_id))
+    volumes_gt = []
+    headers_gt = []
+    positions = []
+    spacings = []
 
-    # Rounding before fusion appears to give best results for SmartPaint values
-    gt_1 = np.around(gt_1)
-    gt_2 = np.around(gt_2)
+    for s in station_ids:
+
+        path_s = path_stations_gt + "{}_station{}.nrrd".format(subject_id, s)
+
+        if not os.path.exists(path_s): 
+            print("WARNING: Could not find ground truth segmentation, assuming empty segmentation for {}".format(path_s))
+            path_s = path_stations_img + "{}_station{}_W.nrrd".format(subject_id, s)
+
+            # Load signal instead and set values to 0
+            (volume_gt, header) = nrrd.read(path_s)
+            volume_gt[:] = 0
+
+        else:
+            (volume_gt, header) = nrrd.read(path_s)
+
+            # Round volumes to binarize segmentations from SmartPaint. Using the float values appears to provide no benefit
+            volume_gt = np.around(volume_gt)
+
+        volumes_gt.append(volume_gt)
+        headers_gt.append(header)
+
+        #
+        positions.append(header["space origin"])
+
+        spacing = header["space directions"]
+        spacing = np.array((spacing[0][0], spacing[1][1], spacing[2][2]))
+
+        spacings.append(spacing)
 
     #
-    (W, W_size, W_end, scalings, offsets) = fuseVolumes.getResamplingParameters([gt_1, gt_2], [header_1, header_2])
+    (gt, gt_origin,seg_fusion_cost) = fuseVolumes.fuseStations(volumes_gt, positions, spacings, target_spacing, False)
 
-     (gt, seg_fusion_cost) = fuseVolumes.fuseStations(gt_1, gt_2, W, W_size, W_end, scalings, offsets, False)
-
-    header = header_1
+    header = headers_gt[0]
     header["sizes"] = gt.shape
+    header["space origin"] = gt_origin
+    for i in range(3): header["space directions"][i][i] = target_spacing[i]
 
     nrrd.write(path_out + "{}_gt.nrrd".format(subject_id), gt, header, compression_level=1)

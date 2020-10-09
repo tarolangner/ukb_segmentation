@@ -1,119 +1,223 @@
 import os
 import sys
+import io
+
+import time
+
 
 import numpy as np
 
-import nrrd
-
+import scipy.interpolate
 import numba_interpolate
 
-c_interpolate_seams = True # If yes, cut overlaps between segments to at most c_max_overlap and interpolate along them, otherwise cut at center of overlap
+from skimage import filters
+
+import nrrd
+import cv2
+
+c_resample_tolerance = 0.01 # Only interpolate voxels further off of the voxel grid than this
+
+c_interpolate_seams = True # If yes, cut overlaps between stations to at most c_max_overlap and interpolate along them, otherwise cut at center of overlap
 c_correct_intensity = True # If yes, apply intensity correction along overlap
-c_max_overlap = 4 # Used in interpolation, any segment overlaps are cut to be most this many voxels in size
+c_max_overlap = 4 # Used in interpolation, any station overlaps are cut to be most this many voxels in size
 
-c_crop_transverse = 3 # Number of transverse slices originally cropped from images before segmentation
+c_trim_axial_slices = 4 # Trim this many axial slices from the output volume to remove folding artefacts
 
-
-def getStationVolumes(path_volumes, path_slices, tag):
-
-    (img, header) = nrrd.read(path_volumes + tag + "_W.nrrd")
-    (gt, out) = loadSlices(path_slices, tag)
-
-    gt = reshapeSeg(gt, img.shape)
-    out = reshapeSeg(out, img.shape)
-
-    return (img, header, gt, out)
+c_use_gpu = True # If yes, use numba for gpu access, otherwise use scipy on cpu
 
 
-def reshapeSeg(vol, target_shape):
+#
+def fuseStations(voxels, positions, pixel_spacings, target_spacing, is_img):
 
-    # Remove padding of segmentation
-    shape_dif = np.array(vol.shape) - np.array(target_shape)
+    for i in range(len(voxels)): 
+        # Flip along z axis
+        voxels[i] = np.ascontiguousarray(np.flip(voxels[i], axis=2))
 
-    offset = (shape_dif / 2).astype("int")
-    vol_out = np.zeros(target_shape)
+    # Resample stations onto output volume voxel grid
+    (voxels, W, W_end, W_size, shifts) = resampleStations(voxels, positions, pixel_spacings, target_spacing)
 
-    start_x = offset[0]
-    end_x = offset[0] + target_shape[0]
+    # Cut station overlaps to at most c_max_overlap
+    (overlaps, W, W_end, W_size, voxels) = trimStationOverlaps(W, W_end, W_size, voxels)
 
-    start_y = offset[1]
-    end_y = offset[1] + target_shape[1]
+    # Combine stations to volumes
+    (volume, fusion_cost) = fuseVolume(W, W_end, W_size, voxels, overlaps, is_img) 
 
-    c = c_crop_transverse
-    vol_out[:, :, c:-c] = vol[start_x:end_x, start_y:end_y, :]
+    # Flip back along z axis
+    volume = np.ascontiguousarray(np.swapaxes(volume, 0, 1))
 
-    vol_out = np.flip(vol_out, axis=2)
+    origin = positions[-1] + shifts[-1, :]
 
-    return vol_out
+    if not is_img:
+        volume = np.around(volume)
+
+    return (volume, origin, fusion_cost)
 
 
-def loadSlices(input_path, tag):
+# Save volumetric nrrd file
+def storeNrrd(volume, output_path, origin):
 
-    files = [f for f in os.listdir(input_path) if os.path.isfile(os.path.join(input_path, f))]
-    files = [f for f in files if tag in f]
-    files = [f for f in files if "out.npy" in f]
+    # See: http://teem.sourceforge.net/nrrd/format.html
+    header = {'dimension': 3}
+    header['type'] = "float"
+    header['sizes'] = volume.shape
 
-    station_slices = sorted([f for f in files if tag in f], reverse=True)
-
-    Z = len(station_slices)
-
-    vol_gt = None
-    vol_out = None
+    # Spacing info compatible with 3D Slicer
+    header['space dimension'] = 3
+    header['space directions'] = np.array(target_spacing * np.eye(3,3))
+    header['space origin'] = origin
+    header['space units'] = "\"mm\" \"mm\" \"mm\""
+    header['encoding'] = 'gzip'
 
     #
-    for z in range(Z):
-
-        path_z = input_path + station_slices[z]
-
-        slice_out = np.load(path_z)
-        slice_gt = np.load(path_z.replace("out.npy", "gt.npy"))
-
-        if vol_gt is None:
-            vol_gt = np.zeros((slice_gt.shape[0], slice_gt.shape[1], Z))
-            vol_out = np.zeros((slice_gt.shape[0], slice_gt.shape[1], Z))
-
-        vol_out[:, :, z] = slice_out
-        vol_gt[:, :, z] = slice_gt
-
-    vol_out = np.swapaxes(vol_out, 0, 1)
-    vol_gt = np.swapaxes(vol_gt, 0, 1)
-
-    return (vol_gt, vol_out)
+    nrrd.write(output_path + ".nrrd", volume, header, compression_level=1)
 
 
-def normalize(values):
-    
-    if len(np.unique(values)) > 1:
-        values = (values - np.amin(values)) / (np.amax(values) - np.amin(values))
+# Generate mean intensity projection 
+def formatMip(volume):
 
-    return values
+    bed_width = 22
+    volume = volume[:, :volume.shape[1]-bed_width, :]
+
+    # Coronal projection
+    slice_cor = np.sum(volume, axis = 1)
+    slice_cor = np.rot90(slice_cor, 1)
+
+    # Sagittal projection
+    slice_sag = np.sum(volume, axis = 0)
+    slice_sag = np.rot90(slice_sag, 1)
+
+    # Normalize intensities
+    slice_cor = (normalize(slice_cor) * 255).astype("uint8")
+    slice_sag = (normalize(slice_sag) * 255).astype("uint8")
+
+    # Combine to single output
+    slice_out = np.concatenate((slice_cor, slice_sag), 1)
+    slice_out = cv2.resize(slice_out, (256, 256))
+
+    return slice_out
+
+
+def normalize(img):
+
+    img = img.astype("float")
+    img = (img - np.amin(img)) / (np.amax(img) - np.amin(img))
+
+    return img
 
 
 ##
-# Return, for S segments:
-# R:     segment start coordinates, shape Sx3
-# R_end: segment end coordinates,   shape Sx3
-# dims:  segment extents,           shape Sx3
-# 
-# Coordinates in R and R_end are in the voxel space of the first segment
-def getReadCoordinates(voxel_data, positions, pixel_spacings):
+# Form sum of absolute differences between station overlaps
+# Normalize by overlap size and intensity range (if image)
+def getFusionCost(W, W_end, voxels, overlaps, is_img):
 
-    S = len(voxel_data)
+    S = len(voxels)
+
+    cost = 0
+    for i in range(S-1):
+
+        # Get coordinates pointing to spatially corresponding voxels in both stations
+        start_0 = np.clip(W[i+1]-W[i], 0, None)
+        start_1 = np.clip(W[i]-W[i+1], 0, None)
+
+        end_0 = voxels[i].shape - np.clip(W_end[i] - W_end[i+1] , 0, None)
+        end_1 = voxels[i+1].shape - np.clip(W_end[i+1] - W_end[i], 0, None)
+
+        # Get difference in overlap
+        dif_i = voxels[i][start_0[0]:end_0[0], start_0[1]:end_0[1], -overlaps[i]:] - voxels[i+1][start_1[0]:end_1[0], start_1[1]:end_1[1], :overlaps[i]]
+
+        # Form sum of absolute differences, normalized by intensity range and overlap size
+        dif_i = np.sum(np.abs(dif_i)) / overlaps[i]
+
+        if is_img:
+
+            # For signal images, normalize fusion cost with intensity range of involved stations
+            max_i = max(np.amax(voxels[i]), np.amax(voxels[i+1]))
+            min_i = min(np.amin(voxels[i]), np.amin(voxels[i+1]))
+
+            dif_i = dif_i / (max_i - min_i)
+
+        cost += dif_i
+
+    return cost
+
+
+def fuseVolume(W, W_end, W_size, voxels, overlaps, is_img):
+
+    S = len(voxels)
+
+    # Cast to datatype
+    for i in range(S):  
+        voxels[i] = voxels[i].astype("float32")
+
+    # 
+    fusion_cost = getFusionCost(W, W_end, voxels, overlaps, is_img)
+
+    # Taper off station edges linearly for later addition
+    if c_interpolate_seams:
+        voxels = fadeStationEdges(overlaps, W_size, voxels)
+
+        #if not is_img:  
+            #for i in range(S): voxels[i] = np.around(voxels[i])
+
+    # Adjust mean intensity of overlapping slices
+    if is_img and c_correct_intensity:
+        voxels = correctOverlapIntensity(overlaps, W_size, voxels)
+
+    # Combine stations into volume by addition
+    volume = combineStationsToVolume(W, W_end, voxels)
+
+    if False:
+        # Remove slices affected by folding
+        if c_trim_axial_slices > 0:
+            start = c_trim_axial_slices
+            end = volume.shape[2] - c_trim_axial_slices
+            volume = volume[:, :, start:end]
+
+    return (volume, fusion_cost)
+
+
+def combineStationsToVolume(W, W_end, voxels):
+
+    S = len(voxels)
+
+    volume_dim = np.amax(W_end, axis=0).astype("int")
+    volume = np.zeros(volume_dim)
+
+    for i in range(S):
+        volume[W[i, 0]:W_end[i, 0], W[i, 1]:W_end[i, 1], W[i, 2]:W_end[i, 2]] += voxels[i][:, :, :]
+
+    #
+    volume = np.flip(volume, 2)
+    volume = np.swapaxes(volume, 0, 1)
+
+    return volume
+
+
+##
+# Return, for S stations:
+# R:     station start coordinates, shape Sx3
+# R_end: station end coordinates,   shape Sx3
+# dims:  station extents,           shape Sx3
+# 
+# Coordinates in R and R_end are in the voxel space of the first station
+def getReadCoordinates(voxels, positions, pixel_spacings, target_spacing):
+
+    S = len(voxels)
 
     # Convert from list to arrays
     positions = np.array(positions)
     pixel_spacings = np.array(pixel_spacings)
 
-    # Get dimensions of segments
+    # Get dimensions of stations
     dims = np.zeros((S, 3))
     for i in range(S):
-        dims[i, :] = voxel_data[i].shape
+        dims[i, :] = voxels[i].shape
 
-    # Get segment start coordinates
+    # Get station start coordinates
     R = positions
     origin = np.array(R[0])
     for i in range(S):
-        R[i, :] = (R[i, :] - origin) / pixel_spacings[0]
+        R[i, :] = (R[i, :] - origin) / target_spacing
 
     R[:, 0] -= np.amin(R[:, 0])
     R[:, 1] -= np.amin(R[:, 1])
@@ -121,107 +225,57 @@ def getReadCoordinates(voxel_data, positions, pixel_spacings):
 
     R[:, [0, 1]] = R[:, [1, 0]]
 
-    # Get segment end coordinates
+    # Get station end coordinates
     R_end = np.array(R)
     for i in range(S):
-        R_end[i, :] += dims[i, :] * pixel_spacings[i, :] / pixel_spacings[0]
+        R_end[i, :] += dims[i, :] * pixel_spacings[i, :] / target_spacing
 
     return (R, R_end, dims)
 
-##
-# Ensure that the segments i and (i + 1) overlap by at most c_max_overlap.
-# Trim any excess symmetrically
-# Update their extents in W and W_end
-def trimSegmentOverlaps(W, W_end, W_size, voxel_data):
-
-    W = np.array(W)
-    W_end = np.array(W_end)
-    W_size = np.array(W_size)
-
-    S = len(voxel_data)
-    overlaps = np.zeros(S).astype("int")
-
-    for i in range(S - 1):
-        # Get overlap between current and next segment
-        overlap = W_end[i, 2] - W[i + 1, 2]
-
-        # No overlap
-        if overlap <= 0:
-            print("WARNING: No overlap between segments {} and {}. Image might be faulty.".format(i, i+1))
-
-            # Small overlap which can for interpolation
-        elif overlap <= c_max_overlap and c_interpolate_seams:
-            print("WARNING: Overlap between segments {} and {} is only {}. Using this overlap for interpolation".format(i, i+1, overlap))
-
-        else:
-            if c_interpolate_seams:
-                cut_a = (overlap - c_max_overlap) / 2.
-                overlap = c_max_overlap
-            else:
-                # Cut at center of seam
-                cut_a = overlap / 2.
-                overlap = 0
-
-            cut_b = int(np.ceil(cut_a))
-            cut_a = int(np.floor(cut_a))
-
-            voxel_data[i] = voxel_data[i][:, :, 0:(W_size[i, 2] - cut_a)]
-            voxel_data[i + 1] = voxel_data[i + 1][:, :, cut_b:]
-
-            #
-            W_end[i, 2] = W_end[i, 2] - cut_a
-            W_size[i, 2] -= cut_a
-
-            W[i + 1, 2] = W[i + 1, 2] + cut_b
-            W_size[i + 1, 2] -= cut_b
-
-        overlaps[i] = overlap
-
-    return (overlaps, W, W_end, W_size, voxel_data)
-
 
 ##
-# Linearly taper off voxel values along overlap of two segments, 
+# Linearly taper off voxel values along overlap of two stations, 
 # so that their addition leads to a linear interpolation.
-def fadeSegmentEdges(overlaps, W_size, voxel_data):
+def fadeStationEdges(overlaps, W_size, voxels):
 
-    S = len(voxel_data)
+    S = len(voxels)
 
     for i in range(S):
 
-        # Only fade inwards facing edges for outer segments
+        # Only fade inwards facing edges for outer stations
         fadeToPrev = (i > 0)
         fadeToNext = (i < (S - 1))
 
-        # Fade ending edge (facing to next segment)
+        # Fade ending edge (facing to next station)
         if fadeToNext:
 
             for j in range(overlaps[i]):
                 factor = (j+1) / (float(overlaps[i]) + 1) # exclude 0 and 1
-                voxel_data[i][:, :, W_size[i, 2] - 1 - j] *= factor
+                voxels[i][:, :, W_size[i, 2] - 1 - j] *= factor
 
-        # Fade starting edge (facing to previous segment)
+        # Fade starting edge (facing to previous station)
         if fadeToPrev:
 
             for j in range(overlaps[i-1]):
                 factor = (j+1) / (float(overlaps[i-1]) + 1) # exclude 0 and 1
-                voxel_data[i][:, :, j] *= factor
+                voxels[i][:, :, j] *= factor
 
-    return voxel_data
+    return voxels
+
 
 ## 
-# Take mean intensity of slices at the edge of the overlap between segments i and (i+1)
+# Take mean intensity of slices at the edge of the overlap between stations i and (i+1)
 # Adjust mean intensity of each slice along the overlap to linear gradient between these means
-def correctOverlapIntensity(overlaps, W_size, voxel_data):
+def correctOverlapIntensity(overlaps, W_size, voxels):
 
-    S = len(voxel_data)
+    S = len(voxels)
 
     for i in range(S - 1):
         overlap = overlaps[i]
 
         # Get average intensity at outer ends of overlap
-        edge_a = voxel_data[i+1][:, :, overlap]
-        edge_b = voxel_data[i][:, :, W_size[i, 2] - 1 - overlap]
+        edge_a = voxels[i+1][:, :, overlap]
+        edge_b = voxels[i][:, :, W_size[i, 2] - 1 - overlap]
 
         mean_a = np.mean(edge_a)
         mean_b = np.mean(edge_b)
@@ -232,127 +286,148 @@ def correctOverlapIntensity(overlaps, W_size, voxel_data):
             factor = (j+1) / (float(overlap) + 1)
             target_mean = mean_b + (mean_a - mean_b) * factor
 
-            # Get current mean of slice when both segments are summed
-            slice_b = voxel_data[i][:, :, W_size[i, 2] - overlap + j]
-            slice_a = voxel_data[i+1][:, :, j]
+            # Get current mean of slice when both stations are summed
+            slice_b = voxels[i][:, :, W_size[i, 2] - overlap + j]
+            slice_a = voxels[i+1][:, :, j]
 
             slice_mean = np.mean(slice_a) + np.mean(slice_b)
 
             # Get correction factor
             correct = target_mean / slice_mean
 
-            voxel_data[i][:, :, W_size[i, 2] - overlap + j] *= correct
-            voxel_data[i+1][:, :, j] *= correct
+            # correct intensity to match linear gradient
+            voxels[i][:, :, W_size[i, 2] - overlap + j] *= correct
+            voxels[i+1][:, :, j] *= correct
 
-    return voxel_data
+    return voxels
 
 
-def getResamplingParameters(volumes, headers):
+##
+# Ensure that the stations i and (i + 1) overlap by at most c_max_overlap.
+# Trim any excess symmetrically
+# Update their extents in W and W_end
+def trimStationOverlaps(W, W_end, W_size, voxels):
 
-    pos_1 = headers[0]["space origin"]
-    pos_2 = headers[1]["space origin"]
+    W = np.array(W)
+    W_end = np.array(W_end)
+    W_size = np.array(W_size)
 
-    spacing = headers[0]["space directions"]
-    spacing = np.array((spacing[0][0], spacing[1][1], spacing[2][2]))
+    S = len(voxels)
+    overlaps = np.zeros(S).astype("int")
 
-    # Determine read coordinates
-    (R, R_end, dims) = getReadCoordinates([volumes[0], volumes[1]], [pos_1, pos_2], [spacing, spacing])
+    for i in range(S - 1):
+        # Get overlap between current and next station
+        overlap = W_end[i, 2] - W[i + 1, 2]
 
-    # Determine write coordinates
+        # No overlap
+        if overlap <= 0:
+            print("WARNING: No overlap between stations {} and {}. Image might be faulty.".format(i, i+1))
+
+        # Small overlap which can for interpolation
+        elif overlap <= c_max_overlap and c_interpolate_seams:
+            print("WARNING: Overlap between stations {} and {} is only {}. Using this overlap for interpolation".format(i, i+1, overlap))
+
+        # Large overlap which must be cut
+        else:
+            if c_interpolate_seams:
+                # Keep an overlap of at most c_max_overlap
+                cut_a = (overlap - c_max_overlap) / 2.
+                overlap = c_max_overlap
+            else:
+                # Cut at center of seam
+                cut_a = overlap / 2.
+                overlap = 0
+
+            cut_b = int(np.ceil(cut_a))
+            cut_a = int(np.floor(cut_a))
+
+            voxels[i] = voxels[i][:, :, 0:(W_size[i, 2] - cut_a)]
+            voxels[i + 1] = voxels[i + 1][:, :, cut_b:]
+
+            #
+            W_end[i, 2] = W_end[i, 2] - cut_a
+            W_size[i, 2] -= cut_a
+
+            W[i + 1, 2] = W[i + 1, 2] + cut_b
+            W_size[i + 1, 2] -= cut_b
+
+        overlaps[i] = overlap
+
+    return (overlaps, W, W_end, W_size, voxels)
+
+
+##
+# Station voxels are positioned at R to R_end, not necessarily aligned with output voxel grid
+# Resample stations onto voxel grid of output volume
+def resampleStations(voxels, positions, pixel_spacings, target_spacing):
+
+    # R: station positions off grid respective to output volume
+    # W: station positions on grid after resampling
+    (R, R_end, dims) = getReadCoordinates(voxels, positions, pixel_spacings, target_spacing)
+
+    # Get coordinates of voxels to write to
     W = np.around(R).astype("int")
     W_end = np.around(R_end).astype("int")
     W_size = W_end - W
 
-    #
-    scalings = (R_end - R) / dims
-    offsets = R - W
+    shift = (R - W) * pixel_spacings
 
-    return (W, W_size, W_end, scalings, offsets)
-
-
-def fuseVolumesRated(volumes_img, headers, volumes_out):
+    result_data = []
 
     #
-    img_1 = volumes_img[0]
-    img_2 = volumes_img[1]
+    for i in range(len(voxels)):
 
-    header_1 = headers[0]
-    header_2 = headers[1]
+        # Get largest offset off of voxel grid
+        offsets = np.concatenate((R[i, :].flatten(), R_end[i, :].flatten()))
+        offsets = np.abs(offsets - np.around(offsets))
 
-    out_1 = volumes_out[0]
-    out_2 = volumes_out[1]
+        max_offset = np.amax(offsets)
 
-    # 
-    (W, W_size, W_end, scalings, offsets) = getResamplingParameters([img_1, img_2], [header_1, header_2])
+        # Get difference in voxel counts
+        voxel_count_out = np.around(W_size[i, :])
+        voxel_count_dif = np.sum(voxel_count_out - dims[i, :])
 
-    #
-    (img, img_fusion_cost) = fuseStations(img_1, img_2, W, W_size, W_end, scalings, offsets, True)
-    (out, seg_fusion_cost) = fuseStations(out_1, out_2, W, W_size, W_end, scalings, offsets, False)
+        # No resampling if station voxels are already aligned with output voxel grid
+        doResample = (max_offset > c_resample_tolerance or voxel_count_dif != 0)
 
-    header = header_1
-    header["sizes"] = img.shape
+        result = None
+        
+        if doResample:
 
-    return (img, header, out, img_fusion_cost, seg_fusion_cost)
+            if c_use_gpu:
 
+                # Use numba implementation on gpu:
+                scalings = (R_end[i, :] - R[i, :]) / dims[i, :]
+                offsets = R[i, :] - W[i, :] 
+                result = numba_interpolate.interpolate3d(W_size[i, :], voxels[i], scalings, offsets)
 
-def fuseStations(vol_1, vol_2, W, W_size, W_end, scalings, offsets, is_img):
+            else:
+                # Use scipy CPU implementation:
+                # Define positions of station voxels (off of output volume grid)
+                x_s = np.linspace(int(R[i, 0]), int(R_end[i, 0]), int(dims[i, 0]))
+                y_s = np.linspace(int(R[i, 1]), int(R_end[i, 1]), int(dims[i, 1]))
+                z_s = np.linspace(int(R[i, 2]), int(R_end[i, 2]), int(dims[i, 2]))
 
-    # Flip along z axis
-    vol_1 = np.ascontiguousarray(np.flip(vol_1, axis=2))
-    vol_2 = np.ascontiguousarray(np.flip(vol_2, axis=2))
+                # Define positions of output volume voxel grid
+                y_v = np.linspace(W[i, 0], W_end[i, 0], W_size[i, 0])
+                x_v = np.linspace(W[i, 1], W_end[i, 1], W_size[i, 1])
+                z_v = np.linspace(W[i, 2], W_end[i, 2], W_size[i, 2])
 
-    #
-    vol_2 = numba_interpolate.interpolate3d(W_size[1, :], vol_2, scalings[1, :], offsets[1, :])
+                xx_v, yy_v, zz_v = np.meshgrid(x_v, y_v, z_v)
 
-    #
-    dim_out = np.amax(W_end, axis=0).astype("int")
-    vol = np.zeros(dim_out)
+                pts = np.zeros((xx_v.size, 3))
+                pts[:, 1] = xx_v.flatten()
+                pts[:, 0] = yy_v.flatten()
+                pts[:, 2] = zz_v.flatten()
 
-    # Trim overlaps
-    (overlaps, W, W_end, W_size, [vol_1, vol_2]) = trimSegmentOverlaps(W, W_end, W_size, [vol_1, vol_2])
+                # Resample stations onto output voxel grid
+                rgi = scipy.interpolate.RegularGridInterpolator((x_s, y_s, z_s), voxels[i], bounds_error=False, fill_value=None)
+                result = rgi(pts)
 
-    fusion_cost = getFusionCost(vol_1, vol_2, overlaps)
+        else:
+            # No resampling necessary
+            result = voxels[i]
 
-    # Taper off segment edges linearly for later addition
-    if c_interpolate_seams:
-        [vol_1, vol_2] = fadeSegmentEdges(overlaps, W_size, [vol_1, vol_2])
+        result_data.append(result.reshape(W_size[i, :]))
 
-        if not is_img:  
-            vol_1 = np.around(vol_1)
-            vol_2 = np.around(vol_2)
-
-    # Adjust mean intensity of overlapping slices
-    if c_correct_intensity and is_img:
-        [vol_1, vol_2] = correctOverlapIntensity(overlaps, W_size, [vol_1, vol_2])
-
-    # Combine
-    vol[0:W_end[0, 0], 0:W_end[0, 1], 0:W_end[0, 2]] += vol_1
-    vol[W[1, 0]:W_end[1, 0], W[1, 1]:W_end[1, 1], W[1, 2]:W_end[1, 2]] += vol_2
-
-    # Flip back along z axis
-    vol = np.ascontiguousarray(np.flip(vol, axis=2))
-
-    return (vol, fusion_cost)
-
-
-def getFusionCost(vol_1, vol_2, overlaps):
-
-    # Volumes are not yet flipped, so indexing is inverted
-    z = overlaps[0]
-    fusion_cost = np.sum(np.abs(vol_2.astype("float")[:, :, :z] - vol_1.astype("float")[:, :, -z:])) / z
-
-    # If intensity image, normalize dif by range
-    maximum = max((np.amax(vol_1), np.amax(vol_2)))
-    minimum = min((np.amin(vol_1), np.amin(vol_2)))
-    if maximum > 1:
-        fusion_cost = fusion_cost / (maximum - minimum)
-
-    return fusion_cost 
-
-
-def normalize(values):
-    
-    if len(np.unique(values)) > 1:
-        values = (values - np.amin(values)) / (np.amax(values) - np.amin(values))
-
-    return values
+    return (result_data, W, W_end, W_size, shift)

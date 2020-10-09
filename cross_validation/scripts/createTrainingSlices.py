@@ -24,10 +24,22 @@ c_crop_slices = 3
 def main(argv):
 
     #
-    path_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/signals/NRRD/"
-    path_seg = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/segmentations/NRRD/"
-    path_ids = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/subject_ids.txt"
-    output_path = "../image_data/kidney_128/"
+    #path_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/signals/NRRD/"
+    #path_seg = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/segmentations/NRRD/"
+    #path_ids = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/subject_ids.txt"
+    #output_path = "../image_data/kidney_128/"
+
+    #
+    #path_img = "/media/taro/DATA/Taro/Projects/ukb_segmentation/github/temp_volumes/liver/signals/NRRD_3/"
+    #path_seg = "/media/taro/DATA/Taro/Projects/ukb_segmentation/github/temp_volumes/liver/segmentations/NRRD_fixedHeaders/"
+    #path_ids = "/media/taro/DATA/Taro/Projects/ukb_segmentation/github/temp_volumes/liver/ids.txt"
+    #output_path = "../image_data/liver_allStations/"
+
+    #
+    path_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/liver/Andres_refined/signals/"
+    path_seg = "/media/taro/DATA/Taro/UKBiobank/segmentations/liver/Andres_refined/segmentations/"
+    path_ids = "/media/taro/DATA/Taro/UKBiobank/segmentations/liver/Andres_refined/ids_add.txt"
+    output_path = "../image_data/liver_refined_99_add/"
 
     #####
     createFolders(output_path, overwrite=True)
@@ -92,7 +104,7 @@ def convertSubject(subject_id, files_img, files_seg, path_img, path_seg, output_
             (slices_seg, shape_seg) = formatSeg(path_seg + file_s, shape_img)
 
             if not np.array_equal(shape_img, shape_seg):
-                print("ERROR: Mismatching dimensions for img and seg of {}".format(name))
+                print("ERROR: Mismatching dimensions for img and seg of {} ({} vs {})".format(name, shape_img, shape_seg))
                 sys.exit()
 
         # For each axial slice, save outputs

@@ -23,18 +23,43 @@ c_crop_axial = 3
 #####
 # Given two imaging stations with water signal for a given subject
 # Make slice-wise predictions and fuse both images and resulting binary segmentation
-def predictForSubject(station_vols, headers, net):
+def predictForSubject(station_vols, headers, net, target_spacings, fuse_signal):
 
     # Make prediction with network
     output_vols = predict(net, station_vols)
 
-    # Fuse and calculate fusion cost terms
-    (img, header, out, img_fusion_cost, seg_fusion_cost) = fuseVolumes.fuseVolumesRated(station_vols, headers, output_vols)
+    #
+    positions = []
+    spacings = []
+    for i in range(len(headers)):
+
+        positions.append(headers[i]["space origin"])
+
+        spacing = headers[i]["space directions"]
+        spacing = np.array((spacing[0][0], spacing[1][1], spacing[2][2]))
+
+        spacings.append(spacing)
+
+    if fuse_signal:
+        (img, img_origin, img_fusion_cost) = fuseVolumes.fuseStations(station_vols, positions, spacings, target_spacings, True)
+    else:
+        img = None
+        img_origin = None
+        img_fusion_cost = None
+
+    (out, seg_origin, seg_fusion_cost) = fuseVolumes.fuseStations(output_vols, positions, spacings, target_spacings, False)
 
     # Remove any segmentation in outermost slices, which may contain folding artefacts
     out[:, :, :c_crop_axial] = 0
     out[:, :, -c_crop_axial:] = 0
 
+    #
+    header = headers[-1]
+    header["sizes"] = out.shape
+    header["space origin"] = seg_origin
+    for i in range(3): header["space directions"][i][i] = target_spacings[i]
+
+    #
     return (img, out, header, img_fusion_cost, seg_fusion_cost)
 
 

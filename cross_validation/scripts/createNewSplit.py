@@ -5,7 +5,7 @@ import numpy as np
 # Any ids that should be added only for training can be listed 
 # in a separate file at a later stage.
 
-split_name = "kidney_64_8fold"
+split_name = "liver_99_8fold"
 split_path = "../splits/" + split_name + "/"
 
 id_list = split_path + "id_list.txt"

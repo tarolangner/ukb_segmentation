@@ -42,7 +42,7 @@ c_datatype_nrrd = "float"    # See: https://github.com/mhe/pynrrd/blob/master/nr
 c_use_gpu = True # If yes, use numba for gpu access, otherwise use scipy on cpu
 
 
-def dicomToVolume(input_path_zip):
+def dicomToVolume(input_path_zip, station_ids):
 
     if not os.path.exists(input_path_zip):
         print("Could not find input file {}".format(input_path_zip))
@@ -59,7 +59,7 @@ def dicomToVolume(input_path_zip):
     headers = []
     
     # Only use abdominal imaging stations
-    for i in range(1, 3):
+    for i in station_ids:
 
         #
         voxel_data_w[i] = np.flip(voxel_data_w[i], 2)

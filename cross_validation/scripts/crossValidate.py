@@ -21,6 +21,11 @@ import evaluate
 import dataLoading
 
 
+# After the slice-wise training, the validation fuses all specified imaging stations
+# to a common space to calculate subject-wise Dice scores and other evaluation metrics
+c_target_spacing = np.array((2.23214293, 2.23214293, 4.5)) # abdominal spacing
+#c_target_spacing = np.array((2.23214293, 2.23214293, 3.)) # top station spacing
+
 def main(argv):
 
     path_network_out = "../networks/kidney_64_8fold/"
@@ -32,14 +37,18 @@ def main(argv):
     path_stations_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/signals/NRRD/"
     path_stations_gt = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/segmentations/NRRD_fixedHeaders/"
 
-    # Optional path to list of ids which are to be used as additional training samples on each split.
+    # Select which MRI stations to use for training and evaluation
+    station_ids = [0, 1, 2]
+
+    # Optional name of list file in split path with ids 
+    # which are to be used as additional training samples, in each split.
     # Set to None for conventional cross-validation
     path_train_ids_add = None
 
-    runExperiment(path_network_out, path_training_slices, path_split, path_stations_img, path_stations_gt, path_train_ids_add)
+    runExperiment(path_network_out, path_training_slices, path_split, path_stations_img, path_stations_gt, path_train_ids_add, station_ids)
 
 
-def runExperiment(path_network_out, path_training_slices, path_split, path_stations_img, path_stations_gt, path_train_ids_add):
+def runExperiment(path_network_out, path_training_slices, path_split, path_stations_img, path_stations_gt, path_train_ids_add, station_ids):
 
     I = 80000 # Training iterations
     save_step = 5000 # Iterations between checkpoint saving
@@ -50,7 +59,7 @@ def runExperiment(path_network_out, path_training_slices, path_split, path_stati
     class_count = 2 # Number of labels, including background
     class_weights = torch.FloatTensor([1, 1]) # Background, L1, L2...
 
-    start_k = 0 # First cross-validation set to validate against
+    start_k = 0 # First cross-validation set to train and validate against
 
     do_train = True
     do_predict = True
@@ -97,13 +106,13 @@ def runExperiment(path_network_out, path_training_slices, path_split, path_stati
             os.makedirs(path_out_k)
             os.makedirs(path_checkpoints)
 
-            loader_train = getDataloader(path_training_slices + "data/", path_out_k + "train_files.txt", train_subsets, path_split, B=1, sigma=2, points=8, path_train_ids_add=path_train_ids_add)
+            loader_train = getDataloader(path_training_slices + "data/", path_out_k + "train_files.txt", train_subsets, path_split, B=1, sigma=2, points=8, path_train_ids_add=path_train_ids_add, station_ids=station_ids)
             time = train.train(net, loader_train, I, path_checkpoints, save_step, class_weights, I_reduce_lr)
 
             with open(path_out_k + "training_time.txt", "w") as f: f.write("{}".format(time))
 
         if do_predict:
-            evaluate.evaluateSnapshots(path_checkpoints, path_stations_img, path_stations_gt, path_split, val_subset, path_out_k + "eval/", net)
+            evaluate.evaluateSnapshots(path_checkpoints, path_stations_img, path_stations_gt, path_split, val_subset, path_out_k + "eval/", net, station_ids, c_target_spacing)
 
         evaluate.writeSubsetTrainingCurve(path_out_k)
         
@@ -121,7 +130,7 @@ def createDocumentation(network_path, split_path):
 
 
 #
-def getDataloader(input_path, output_path, subsets, path_split, B, sigma, points, path_train_ids_add):
+def getDataloader(input_path, output_path, subsets, path_split, B, sigma, points, path_train_ids_add, station_ids):
 
     # Get chosen volumes
     subject_ids = []
@@ -140,10 +149,10 @@ def getDataloader(input_path, output_path, subsets, path_split, B, sigma, points
 
     print("Loading data for {} subjects".format(len(subject_ids)))
 
-    # For each subject, use stations 1 and 2
+    # For each subject, use the specified stations
     stations = []
-    stations.extend([f + "_station1" for f in subject_ids])
-    stations.extend([f + "_station2" for f in subject_ids])
+    for s in station_ids:
+        stations.extend([f + "_station{}".format(s) for f in subject_ids])
 
     # Get training samples
     files = [f for f in os.listdir(input_path) if os.path.isfile(os.path.join(input_path, f))]
