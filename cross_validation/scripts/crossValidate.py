@@ -20,7 +20,6 @@ import predict
 import evaluate
 import dataLoading
 
-
 # After the slice-wise training, the validation fuses all specified imaging stations
 # to a common space to calculate subject-wise Dice scores and other evaluation metrics
 c_target_spacing = np.array((2.23214293, 2.23214293, 4.5)) # abdominal spacing
@@ -33,12 +32,12 @@ def main(argv):
     path_training_slices = "../image_data/kidney_128/"
     path_split = "../splits/kidney_64_8fold/"
 
-    # Paths to nrrd volumes
+    # Paths to nrrd volumes (used during evaluation)
     path_stations_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/signals/NRRD/"
     path_stations_gt = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/segmentations/NRRD_fixedHeaders/"
 
     # Select which MRI stations to use for training and evaluation
-    station_ids = [0, 1, 2]
+    station_ids = [1, 2]
 
     # Optional name of list file in split path with ids 
     # which are to be used as additional training samples, in each split.

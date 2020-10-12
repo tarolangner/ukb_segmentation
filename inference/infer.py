@@ -36,16 +36,13 @@ def main(argv):
     path_dicom = "/media/veracrypt1/UKB_DICOM/" # Path to UKB dicoms
 
     path_checkpoint = "/media/taro/DATA/Taro/Projects/ukb_segmentation/cross-validation/networks/kidney_122_traintest_watRoi192_deform_80kLR/subset_0/snapshots/iteration_080000.pth.tar"
-    path_out = "/media/taro/DATA/Taro/Projects/ukb_segmentation/github/temp_out/"
+    path_out = "/media/taro/DATA/Taro/Projects/ukb_segmentation/github/inference_kidney_122/"
 
     # Select which MRI stations to perform inference on
-    station_ids = [0, 1, 2]
+    station_ids = [1, 2]
 
     #
     time_start = time.time()
-
-    #if os.path.exists(path_out):
-        #shutil.rmtree(path_out)
 
     ###    
     if not os.path.exists(path_out):
