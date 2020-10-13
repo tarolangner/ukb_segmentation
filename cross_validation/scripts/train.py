@@ -24,9 +24,10 @@ def train(net, loader, I, checkpoint_path, save_step, class_weights, I_reduce_lr
 
         for X, Y, name in loader:
 
-            # Kind of hacky but works
             if i >= I:
-                continue
+                # if this causes exceptions, use continue instead
+                break
+
 
             X = X.cuda(non_blocking=True)
             Y = Y.cuda(non_blocking=True)
