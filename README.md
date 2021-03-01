@@ -22,4 +22,4 @@ If you use this code for any derived work, please consider citing [1] and linkin
 
 # References
 
-[1] [_T. Langner, A. Östling, L. Maldonis, A. Karlsson, D. Olmo, D. Lindgren, A. Wallin, L. Lundin, R. Strand, H. Ahlström, J. Kullberg, “Identifying morphological indicators of aging with neural networks on large-scale whole-body MRI,” arXiv:2006.06996 [cs], Jun. 2020. arXiv: 2006.06996_](https://arxiv.org/abs/2006.06996)\
+[1] [_T. Langner, A. Östling, L. Maldonis, A. Karlsson, D. Olmo, D. Lindgren, A. Wallin, L. Lundin, R. Strand, H. Ahlström, J. Kullberg, “Kidney segmentation in neck-to-knee body MRI of 40,000 UK Biobank participants,” Scientific reports 10.1 (2020): 1-10_](https://www.nature.com/articles/s41598-020-77981-4)\
