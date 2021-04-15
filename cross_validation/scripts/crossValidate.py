@@ -27,22 +27,41 @@ c_target_spacing = np.array((2.23214293, 2.23214293, 4.5)) # abdominal spacing
 
 def main(argv):
 
-    path_network_out = "../networks/kidney_64_8fold/"
+    if True:
+        path_network_out = "../networks/kidney_64_8fold_retrainAdded58_v7_DataLoaderFix/"
 
-    path_training_slices = "../image_data/kidney_128/"
-    path_split = "../splits/kidney_64_8fold/"
+        path_training_slices = "../image_data/kidney_128/"
+        path_split = "../splits/kidney_64_8fold/"
 
-    # Paths to nrrd volumes (used during evaluation)
-    path_stations_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/signals/NRRD/"
-    path_stations_gt = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/segmentations/NRRD_fixedHeaders/"
+        # Paths to nrrd volumes (used during evaluation)
+        path_stations_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/signals/NRRD/"
+        path_stations_gt = "/media/taro/DATA/Taro/UKBiobank/segmentations/kidney/combined_128/segmentations/NRRD_v7/"
 
-    # Select which MRI stations to use for training and evaluation
-    station_ids = [1, 2]
+        # Select which MRI stations to use for training and evaluation
+        station_ids = [1, 2]
 
-    # Optional name of list file in split path with ids 
-    # which are to be used as additional training samples, in each split.
-    # Set to None for conventional cross-validation
-    path_train_ids_add = None
+        # Optional name of list file in split path with ids 
+        # which are to be used as additional training samples, in each split.
+        # Set to None for conventional cross-validation
+        path_train_ids_add = "images_add58.txt"
+
+    if False:
+        path_network_out = "../networks/liver_98_traintest/"
+
+        path_training_slices = "../image_data/liver_refined_99/"
+        path_split = "../splits/liver_98_traintest/"
+
+        # Paths to nrrd volumes (used during evaluation)
+        path_stations_img = "/media/taro/DATA/Taro/UKBiobank/segmentations/liver/Andres_refined/signals/"
+        path_stations_gt = "/media/taro/DATA/Taro/UKBiobank/segmentations/liver/Andres_refined/segmentations/"
+
+        # Select which MRI stations to use for training and evaluation
+        station_ids = [0, 1, 2]
+
+        # Optional name of list file in split path with ids 
+        # which are to be used as additional training samples, in each split.
+        # Set to None for conventional cross-validation
+        path_train_ids_add = None
 
     runExperiment(path_network_out, path_training_slices, path_split, path_stations_img, path_stations_gt, path_train_ids_add, station_ids)
 
@@ -51,6 +70,8 @@ def runExperiment(path_network_out, path_training_slices, path_split, path_stati
 
     I = 80000 # Training iterations
     save_step = 5000 # Iterations between checkpoint saving
+    #I = 100 # Training iterations
+    #save_step = 100 # Iterations between checkpoint saving
 
     I_reduce_lr = 60000 # Reduce learning rate by factor 10 after this many iterations
 
@@ -82,7 +103,8 @@ def runExperiment(path_network_out, path_training_slices, path_split, path_stati
     cv_subsets = np.arange(K)
 
     #
-    for k in range(start_k, K):
+    #for k in range(start_k, K):
+    for k in range(start_k, 1):
 
         # Validate against subset k
         val_subset = cv_subsets[k]
@@ -169,7 +191,10 @@ def getDataloader(input_path, output_path, subsets, path_split, B, sigma, points
                                         num_workers=8,
                                         batch_size=B,
                                         shuffle=True,
-                                        pin_memory=True)
+                                        pin_memory=True,
+                                        # use different random seeds for each worker
+                                        # courtesy of https://github.com/xingyizhou/CenterNet/issues/233
+                                        worker_init_fn = lambda id: np.random.seed(torch.initial_seed() // 2**32 + id) )
 
     # Document actually used training files
     with open(output_path, "w") as f:
