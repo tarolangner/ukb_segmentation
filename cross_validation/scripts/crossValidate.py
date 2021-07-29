@@ -103,8 +103,8 @@ def runExperiment(path_network_out, path_training_slices, path_split, path_stati
     cv_subsets = np.arange(K)
 
     #
-    #for k in range(start_k, K):
-    for k in range(start_k, 1):
+    for k in range(start_k, K):
+    #for k in range(start_k, 1):
 
         # Validate against subset k
         val_subset = cv_subsets[k]
