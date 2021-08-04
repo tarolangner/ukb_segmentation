@@ -6,7 +6,6 @@ import time
 
 import zipfile
 import pydicom
-import git
 
 import numpy as np
 
