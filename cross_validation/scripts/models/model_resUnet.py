@@ -6,10 +6,16 @@ from torchvision import models
 import copy
 
 ###
-# Original implementation courtesy of:
+# Note: This neural network architecture is based on the work of Vladimir Iglovikov and Alexey Shvets
+# as described in "TernausNet: U-Net with VGG11 EncoderPre-Trained on ImageNet for Image Segmentation", 2018
+# https://arxiv.org/pdf/1801.05746.pdf
+# The original implementation can be found here: https://github.com/ternaus/TernausNet 
+#
+# It was subsequently modified by:
 # Dag Lindgren
 # Andreas Wallin
 # Lowe Lundin
+# Taro Langner
 
 def conv3x3(in_, out):
     return nn.Conv2d(in_, out, 3, padding=1)

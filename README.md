@@ -6,7 +6,7 @@ This repository contains PyTorch code for cross-validation and inference with ne
 The included inference pipeline and trained snapshot enables measurements of left and right parenchymal kidney volumes (excluding cysts and vessels) from these images.
 
 Contents:
-- 2.5D U-Net architecture with residual connections
+- 2.5D U-Net architecture with residual connections (based on [TernausNet, Iglovikov et al. 2018](https://arxiv.org/pdf/1801.05746.pdf))
 - Infrastructure for training and *cross-validation*
 - Pipeline for *inference* on neck-to-knee body MRI DICOMs
 - Code for *quality_controls* based on numerical metrics
