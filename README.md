@@ -12,7 +12,7 @@ Contents:
 - Code for *quality_controls* based on numerical metrics
 - A [_trained snapshot for parenchymal kidney tissue can be found here_](https://uppsala.box.com/s/lan3d807uqz3rhk6vf7o8u5jjnex4jyp)
 
-For any questions and suggestions, contact me at: taro.langner@surgsci.uu.se
+For any questions and suggestions, contact me at: taro.langner(at)gmail.com
 
 # Notes
 Access to the underlying image data can only be granted by [the UK Biobank Study](https://www.ukbiobank.ac.uk/register-apply/). Annotations from the quality controls used in our work [1] are available under return data ID 2345 for our application 14237. Our measurements and annotations for the kidneys will eventually be made available as well.
