@@ -61,7 +61,7 @@ class UNet(nn.Module):
         self.pool = nn.MaxPool2d(2, 2)
         self.convertconv = conv1x1(in_=channel_count, out=3)
 
-        encoder = models.vgg11(pretrained=pre_trained).features
+        encoder = models.vgg11(weights=models.VGG11_Weights.DEFAULT).features
 
         self.relu = encoder[1]
         self.conv1 = encoder[0]
